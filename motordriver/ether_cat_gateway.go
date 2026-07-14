@@ -133,6 +133,30 @@ type MasterDevice struct {
 	// 30-second timeout. Cleared by hasTargetReached on exit.
 	posMoveAborted atomic.Bool
 
+	// forceLatchReset: set to true whenever Jog mode is engaged. Consumed by
+	// the cyclic task on the NEXT Profile Position move to force
+	// latchCounters[idx] back to 0 — i.e. force the full Phase 1 "settle"
+	// period (~10ms of holding bit4 LOW before asserting it HIGH) exactly
+	// once after any jog session, regardless of what latchCounters was
+	// already sitting at from before the jog started (jog never touches
+	// that counter, so it can be stale from a pre-jog move).
+	//
+	// ROOT CAUSE this fixes: comparing against the older, proven-stable
+	// rtc-pdo/motordriver_changes codebase, that version ALWAYS reset the
+	// latch counter to 0 on every idle tick — i.e. every single move always
+	// went through the full settle period. This HAL14 build's "Bug 8" fix
+	// deliberately stopped resetting the counter between CONSECUTIVE
+	// position moves, purely as a latency optimization, and was never
+	// validated against a jog→position transition. If a position move had
+	// already happened before jogging, the counter was left >=10 through
+	// the whole jog session, so the very first move after jog skipped the
+	// settle period entirely — asserting bit4 HIGH before the drive had
+	// digested the fresh target after leaving Velocity mode. This flag
+	// restores the old always-settle behavior specifically for the
+	// jog→position transition, while keeping the optimization intact for
+	// genuine consecutive position moves.
+	forceLatchReset atomic.Bool
+
 	Position int
 	Name     string
 	Device   ethercatDevice.Device
@@ -340,6 +364,10 @@ func (d *MasterDevice) EnableJogPDO(enabled bool) {
 	d.pdoJogEnabled.Store(enabled)
 	if enabled {
 		d.pdoPosEnabled.Store(false)
+		// See forceLatchReset's doc comment: any jog session invalidates
+		// whatever latchCounters was left at, so force a full settle period
+		// on the next position move regardless of what it was before.
+		d.forceLatchReset.Store(true)
 	}
 }
 

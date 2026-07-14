@@ -32,9 +32,9 @@ main:
 c:
 	gcc -o libethercatinterface.so -Wall -g -shared -fPIC ethercatinterface.c -I/opt/etherlab/include /opt/etherlab/lib/libethercat.a
 
-## exec: execute the compiled main application
+## exec: execute the compiled main application (with RT priority — REQUIRED for DC/SYNC0 stability)
 exec:
-	./jamun
+	sudo env LD_LIBRARY_PATH=/home/pi/gosrc/src/EtherCAT:/opt/etherlab/lib GOGC=500 chrt -f 80 ./jamun
 
 ## run: call go run on main.go
 run:

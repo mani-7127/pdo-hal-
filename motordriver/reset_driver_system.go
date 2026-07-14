@@ -5,7 +5,7 @@ import (
 	"EtherCAT/logger"
 	"EtherCAT/motordriver/statusnotifier"
 	"fmt"
-	//"time"
+	"time"
 )
 /*
 resetSystemWorker is the single goroutine that handles all system resets.
@@ -66,7 +66,41 @@ func resetSystemWorker() {
 		msg := <-channels.ResetDriverSystem
 		if msg == true {
 			logger.Info("resetting driver system....")
-			
+
+			// Abort any in-flight position move BEFORE doing anything else.
+			//
+			// ROOT CAUSE (found via SD700 testing, but this is fully generic —
+			// applies identically to A6B/Delta/Nidec): posMoveAborted was
+			// previously only ever set by emergency() (drive_power.go). A plain
+			// Reset never touched it. If a move's hasTargetReached() call was
+			// still blocked waiting for bit10 (e.g. a slow homing move) when
+			// Reset fired, that goroutine was NEVER signalled to stop — it kept
+			// running orphaned for up to its own 30s timeout, still holding
+			// motionMu and still polling/writing device state, concurrently
+			// with whatever NEW move got issued right after the reset. This
+			// produced exactly the "false target reached" / stale-diff symptom
+			// (an old move's leftover state bleeding into a new one), and would
+			// happen on any drive, not just SD700.
+			//
+			// Fix: set posMoveAborted for every device here too — same signal
+			// emergency() already uses, so hasTargetReached's existing exit
+			// path handles it identically for both cases.
+			for _, dev := range masterDevices {
+				dev.posMoveAborted.Store(true)
+			}
+			// hasTargetReached polls every 1ms — 20ms is ample time for any
+			// truly in-flight move to observe the abort and exit. If nothing
+			// was actually moving, this sleep just costs 20ms on every Reset.
+			// Explicitly clearing the flag afterward (rather than relying on
+			// hasTargetReached to consume it) matters: if NO move was in
+			// flight, nothing would ever reset it back to false, and it would
+			// incorrectly cancel the very next legitimate move on its first
+			// Phase 2 check.
+			time.Sleep(20 * time.Millisecond)
+			for _, dev := range masterDevices {
+				dev.posMoveAborted.Store(false)
+			}
+
 			// 1. Stop high-level listeners (aborts any active command sequences)
 			stopECSCheck() // MUST be first: unblocks any goroutine waiting in doECSCheck / doECSCheckZero
 			stopDriverPolling()

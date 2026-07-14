@@ -31,6 +31,20 @@ const zeroRefFeed = 10
 // motion function.  It has been removed here; the drive is already correctly
 // configured at boot time.
 func moveToZero(device *MasterDevice) error {
+	// FIX: motionMu was previously only acquired by moveMotorToDegree, even
+	// though its own comment says it exists to prevent ANY two motion
+	// goroutines from touching shared device state concurrently.
+	// moveToZero calls the exact same underlying primitives (SetTargetPositionPDO,
+	// hasTargetReached, ppSetpointPending) on the same *MasterDevice — without
+	// this lock, a zero-reference move and a position move could run fully
+	// concurrently and race on that shared state. This matches the observed
+	// bug pattern exactly: every failing test sequence had a zero-reference
+	// move immediately preceding the position move that then failed with a
+	// confusing "false target reached" error. Fully generic — applies to
+	// every drive, not just SD700.
+	motionMu.Lock()
+	defer motionMu.Unlock()
+
 	logger.Debug("move to zero started")
 
 	driverStatus := getCurrentDriverStatus(device.Device.Name)

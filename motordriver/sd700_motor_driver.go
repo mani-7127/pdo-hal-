@@ -28,6 +28,14 @@ Key differences from Panasonic A6 / Delta / Nidec:
     the TxPDO mapping and wired here.
 */
 
+/*
+#cgo CFLAGS: -g -Wall -I/opt/etherlab/include -I/home/pi/gosrc/src/EtherCAT
+#cgo LDFLAGS: -L/home/pi/gosrc/src/EtherCAT -L/opt/etherlab/lib/ -lethercatinterface -lethercat
+#include "ecrt.h"
+#include "ethercatinterface.h"
+*/
+import "C"
+
 import (
 	ethercatDevice "EtherCAT/ethercatdevicedatatypes"
 	logger "EtherCAT/logger"
@@ -172,7 +180,33 @@ func (s SD700) sd700IOStatusListener(masterDev *MasterDevice, stop <-chan struct
 // SetupPDO uses the generic YAML-driven C engine — reads configs/sd700.yml's
 // pdo: section (0x1601 Rx / 0x1A01 Tx, matching the drive's live default).
 func (s SD700) SetupPDO(dev *MasterDevice) error {
-	return setupPDOPositionGeneric(dev)
+	if err := setupPDOPositionGeneric(dev); err != nil {
+		return err
+	}
+
+	// Async SDO request for Profile Velocity (0x6081), so G01 F<rpm> / setRpm
+	// can actually change speed while the PDO cyclic task is running. Without
+	// this, PdoVelSdoReady stays false and the drive is stuck at whatever
+	// 0x6081 was set to once, at startup, in configs/sd700.yml's configure
+	// sequence (1,000,000 raw ≈ 458 rpm motor-shaft) — every subsequent
+	// commanded speed is silently ignored. create_profile_vel_sdo_request is
+	// fully generic (hardcodes only standard object 0x6081), so this is the
+	// same call A6B already uses — no new C code needed.
+	sc := dev.SlaveConfig
+	if sc == nil {
+		return fmt.Errorf("SD700.SetupPDO: SlaveConfig is nil after generic setup")
+	}
+	reqPtr := C.create_profile_vel_sdo_request(sc)
+	if reqPtr != nil {
+		dev.PdoVelSdoReq = reqPtr
+		dev.PdoVelSdoReady = true
+		fmt.Println("[PDO] SD700: Profile Velocity SDO request registered (0x6081)")
+	} else {
+		dev.PdoVelSdoReady = false
+		fmt.Printf("[WARN] SD700: create_profile_vel_sdo_request failed\n")
+	}
+
+	return nil
 }
 
 // IsTargetReached returns true when a Profile Position move is complete.

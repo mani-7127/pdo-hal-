@@ -640,6 +640,18 @@ func StartPDOCyclic(devices []*MasterDevice) error {
 
 							base := uint16(0x000F | 0x0020)
 							if d.ppSetpointPending.Load() {
+								// See forceLatchReset's doc comment (ether_cat_gateway.go):
+								// force the full settle period once on the first move
+								// after any jog session, regardless of what
+								// latchCounters was already at — jog never touches
+								// this counter, so it can be stale from before jog
+								// started, causing that first post-jog move to
+								// wrongly skip straight to Phase 2.
+								if d.forceLatchReset.Load() {
+									latchCounters[idx] = 0
+									d.forceLatchReset.Store(false)
+								}
+
 								// Profile Position set-point handshake (CiA-402 §9.4.2):
 								//
 								// Phase 1 (latchCounters < 10): hold bit4 LOW for 10 cycles (~10ms)

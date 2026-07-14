@@ -3,43 +3,44 @@
 # EDITTING OF THIS FILE SHOULD BE DONE BY EXPERIENCED PERSONNEL ONLY
 # ANY CHANGE WITHOUT PROPER KNOWLEDGE OF ETHERCAT DEVICE ADDRESSING CAN CAUSE DAMAGE TO THE SYSTEM
 # ****************************************************************************************************
-# EtherCAT addressing configuration for Delta ASDA-A2-E series drives.
-# VendorID: 0x000001DD  ProductCode: 0x10305070
+# EtherCAT addressing configuration for Veichi SD700_ECAT_V1.2_G.
+# VendorID: 0x00850104  ProductCode: 0x01030507  RevisionNo: 0x02040608
 #
-# Key differences from Panasonic A6:
-#  - CSP mode (0x6060=0x08) used by default; interpolation period configured via 0x60C2
-#  - Digital inputs read from standard 0x60FD (active-HIGH POT/NOT)
-#  - No vendor-specific objects (0x4F25, 0x4D00, 0x4D01, 0x60FE)
-#  - No multiturn reset, no finish signal, no clamp/declamp via PDO
+# STATUS: bring-up stage.
+#  - PDO mapping below (0x1600/0x1A00, 6+7 entries) has been empirically
+#    confirmed to register successfully on real SD700 hardware (PdoJogReady=
+#    true, PdoPosReady=true, cyclic task started) — this came from a config
+#    mixup where Delta's YAML was accidentally loaded for this drive, but
+#    since all objects referenced DO exist in SD700's dictionary (unlike
+#    0x4F25 which caused the original AL 0x001E), the extended mapping itself
+#    is valid. Re-verify with `ethercat states -p 0 OP` before trusting fully.
+#  - dc_assign_activate is set to 0x0300 here (NOT 0x0000) — SD700's own
+#    manual states "The SD700-EtherCAT servo drive only supports DC
+#    synchronous mode." Free Run (0x0000) is very likely why the drive was
+#    stuck in SAFEOP+E in the last test — that value came from Delta's file,
+#    which explicitly allows Free Run for ITS drive, not this one.
+#  - configure steps below use SD700's own init sequence (validated earlier
+#    getting the drive to OP with the minimal 3-entry mapping) — NOT Delta's
+#    P1-34/P1-35 (0x2122/0x2123) steps, which map to different objects
+#    entirely on SD700 and caused an SDO abort (0x06090031) last run.
+#  - motion: values restored to the computed SD700 numbers (23-bit encoder,
+#    assumed 90:1 gearbox) — NOT Delta's rpm_const=10/drive_x_ratio=10000
+#    which were wrongly injected last run. DO NOT run real motion until the
+#    90:1 gearbox assumption and rpm_const are independently verified
+#    (see earlier calibration steps — this has not been done empirically yet).
 
 ethercat:
     - operation:
       name: configure
       steps:
         - step:
-          name: "operation mode (CSP)"
+          name: "operation mode"
           address: 0x6060
           subindex: 0x00
-          value: "0x1"
-          delay: 0
-          isBinary: false
-          dataType: "U8"
-        - step:
-          name: "interpolation time period value"
-          address: 0x60C2
-          subindex: 0x01
           value: "1"
           delay: 0
           isBinary: false
           dataType: "U8"
-        - step:
-          name: "interpolation time period index"
-          address: 0x60C2
-          subindex: 0x02
-          value: "253"
-          delay: 0
-          isBinary: false
-          dataType: "I8"
         - step:
           name: "target position"
           address: 0x607A
@@ -57,26 +58,37 @@ ethercat:
           isBinary: false
           dataType: "U32"
         - step:
-          name: "acceleration time (P1-34)"
-          address: 0x2122
+          name: "profile acceleration"
+          address: 0x6083
           subindex: 0x00
-          value: "200" # 200 ms acceleration
+          value: "100000000"
+          delay: 0
+          isBinary: false
+          dataType: "U32"
+        - step:
+          name: "profile deceleration"
+          address: 0x6084
+          subindex: 0x00
+          value: "100000000"
+          delay: 0
+          isBinary: false
+          dataType: "U32"
+        - step:
+          name: "drive mode"
+          address: 0x60F2
+          subindex: 0x00
+          value: "2"
           delay: 0
           isBinary: false
           dataType: "U16"
         - step:
-          name: "deceleration time (P1-35)"
-          address: 0x2123
+          name: "reverse direction activate"
+          address: 0x607E
           subindex: 0x00
-          value: "200" # 200 ms deceleration
+          value: "224"
           delay: 0
           isBinary: false
-          dataType: "U16"
-        # NOTE: 0x6083/0x6084 (Profile Acceleration / Deceleration) are rejected by
-        # the Delta ASDA-A2-E via SDO in all tested configurations — the drive returns
-        # I/O error on every retry. Attempting to write them fires a startup alarm which
-        # blocks the "No Alarms" state. These objects are omitted here.
-        # The drive uses its factory-default acceleration profile for Mode 3 jog.
+          dataType: "U8"
     - operation:
       name: poweron
       steps:
@@ -84,7 +96,7 @@ ethercat:
           name: "drive init"
           address: 0x6040
           subindex: 0x00
-          value: "0x0006"
+          value: "6"
           delay: 100000
           isBinary: false
           dataType: "U16"
@@ -112,15 +124,6 @@ ethercat:
       name: fastPowerOff
       steps:
         - step:
-          name: "fast poweroff read"
-          address: 0x6040
-          subindex: 0x00
-          value: "0xFFFF"
-          delay: 0
-          isBinary: false
-          dataType: "U16"
-          action: "read"
-        - step:
           name: "fast poweroff"
           address: 0x6040
           subindex: 0x00
@@ -133,14 +136,6 @@ ethercat:
       name: poweroff
       steps:
         - step:
-          name: "start power off"
-          address: 0x6040
-          subindex: 0x00
-          value: "11111111"
-          delay: 0
-          isBinary: true
-          dataType: "U16"
-        - step:
           name: "power off"
           address: 0x6040
           subindex: 0x00
@@ -148,49 +143,6 @@ ethercat:
           delay: 0
           isBinary: true
           dataType: "U16"
-    - operation:
-      name: manualjog
-      steps:
-        - step:
-          name: "target velocity"
-          address: 0x60FF
-          subindex: 0x00
-          #value will be populated by the system. Do not change the jog_rpm_placeholder string.
-          value: "jog_rpm_placeholder"
-          isBinary: false
-          dataType: "U32"
-          delay: 0
-        - step:
-          name: "operation mode (PV)"
-          address: 0x6060
-          subindex: 0x00
-          value: "0x3"
-          delay: 0
-          isBinary: false
-          dataType: "U8"
-    - operation:
-      name: stopjog
-      steps:
-        - step:
-          name: "target velocity"
-          address: 0x60FF
-          subindex: 0x00
-          value: "0"
-          isBinary: false
-          dataType: "U32"
-          delay: 0
-    - operation:
-      name: pollstatus
-      steps:
-        - step:
-          name: "poll status"
-          address: 0x6064
-          subindex: 0x00
-          value: "0xFFFF"
-          delay: 5000
-          isBinary: false
-          dataType: "UINT"
-          action: "read"
     - operation:
       name: faultReset
       steps:
@@ -211,15 +163,6 @@ ethercat:
           dataType: "U32"
           action: "write"
         - step:
-          name: "read current controlword"
-          address: 0x6040
-          subindex: 0x00
-          value: "0xFFFF"
-          delay: 0
-          isBinary: false
-          dataType: "U16"
-          action: "read"
-        - step:
           name: "fault reset rising edge"
           address: 0x6040
           subindex: 0x00
@@ -229,35 +172,13 @@ ethercat:
           dataType: "U16"
           action: "write"
         - step:
-          name: "CSP mode"
+          name: "operation mode"
           address: 0x6060
           subindex: 0x00
-          value: "8"
+          value: "1"
           delay: 0
           isBinary: false
           dataType: "U8"
-          action: "write"
-    - operation:
-      # Delta has no multiturn reset — this operation is intentionally empty.
-      name: resetMultiTurn
-      steps:
-        - step:
-          name: "Unlock parameter protection (P2-08)"
-          address: 0x2208
-          subindex: 0x00
-          value: "271"
-          delay: 50000
-          isBinary: false
-          dataType: "U16"
-          action: "write"
-        - step:
-          name: "Trigger absolute encoder reset (P2-71)"
-          address: 0x2247
-          subindex: 0x00
-          value: "1"
-          delay: 100000
-          isBinary: false
-          dataType: "U16"
           action: "write"
     - operation:
       name: readinputsignal
@@ -271,6 +192,85 @@ ethercat:
           isBinary: false
           dataType: "U32"
           action: "read"
+    - operation:
+      name: readError
+      steps:
+        - step:
+          name: "read error from the driver"
+          address: 0x603F
+          subindex: 0x00
+          value: "0xFFFF"
+          delay: 0
+          isBinary: false
+          dataType: "U16"
+          action: "read"
+    - operation:
+      name: readStatusword
+      steps:
+        - step:
+          name: "read statusword"
+          address: 0x6041
+          subindex: 0x00
+          value: "0xFFFF"
+          delay: 0
+          isBinary: false
+          dataType: "U16"
+          action: "read"
+    - operation:
+      name: reverse
+      steps:
+        - step:
+          name: "Activate reverse direction"
+          address: 0x607E
+          subindex: 0x00
+          value: "224"
+          delay: 0
+          isBinary: false
+          dataType: "U8"
+          action: "write"
+    - operation:
+      name: nonreverse
+      steps:
+        - step:
+          name: "Activate non reverse direction"
+          address: 0x607E
+          subindex: 0x00
+          value: "0"
+          delay: 0
+          isBinary: false
+          dataType: "U8"
+          action: "write"
+    - operation:
+      name: manualjog
+      steps:
+        - step:
+          name: "target velocity"
+          address: 0x60FF
+          subindex: 0x00
+          #value will be populated by the system. Do not change the jog_rpm_placeholder string.
+          value: "jog_rpm_placeholder"
+          isBinary: false
+          dataType: "U32"
+          delay: 0
+        - step:
+          name: "operation mode"
+          address: 0x6060
+          subindex: 0x00
+          value: "0x3"
+          delay: 0
+          isBinary: false
+          dataType: "U8"
+    - operation:
+      name: stopjog
+      steps:
+        - step:
+          name: "target velocity"
+          address: 0x60FF
+          subindex: 0x00
+          value: "0"
+          isBinary: false
+          dataType: "U32"
+          delay: 0
     - operation:
       name: jog
       steps:
@@ -316,117 +316,26 @@ ethercat:
           isBinary: false
           dataType: "U32"
           action: "write"
-    - operation:
-      name: readError
-      steps:
-        - step:
-          name: "read error from the driver"
-          address: 0x603F
-          subindex: 0x00
-          value: "0xFFFF"
-          delay: 0
-          isBinary: false
-          dataType: "U16"
-          action: "read"
-    - operation:
-      # Delta has no ECS input in 0x60FD — no-op.
-      name: ecs
-      steps:
-    - operation:
-      # Delta has no hardware reset input in 0x60FD — no-op.
-      name: hard_reset
-      steps:
-    - operation:
-      # Delta has no digital output PDO — finish signal is a no-op.
-      name: finsignal
-      steps:
-    - operation:
-      name: readStatusword
-      steps:
-        - step:
-          name: "read statusword"
-          address: 0x6041
-          subindex: 0x00
-          value: "0xFFFF"
-          delay: 0
-          isBinary: false
-          dataType: "U16"
-          action: "read"
-    - operation:
-      name: finsignalend
-      steps:
-    - operation:
-      # Delta has no brake solenoid via PDO — no-op.
-      name: break_on
-      steps:
-    - operation:
-      name: break_off
-      steps:
-    - operation:
-      name: emergency
-      steps:
-    - operation:
-      name: reverse
-      steps:
-        - step:
-          name: "Activate reverse direction"
-          address: 0x607E
-          subindex: 0x00
-          value: "224"
-          delay: 0
-          isBinary: false
-          dataType: "U8"
-          action: "write"
-    - operation:
-      name: nonreverse
-      steps:
-        - step:
-          name: "Activate non reverse direction"
-          address: 0x607E
-          subindex: 0x00
-          value: "0"
-          delay: 0
-          isBinary: false
-          dataType: "U8"
-          action: "write"
-# ============================================================
-# PDO Layout — Phase 2: Dynamic Slave Mapping
-#
-# This section defines the EtherCAT PDO structure for the
-# Delta ASDA-A2-E. Previously this was hardcoded as C arrays
-# (delta_rx_entries[], delta_tx_entries[]) in ethercatinterface.c.
-#
-# Moving it here means:
-#   - Adding a new drive brand = write a new YAML, zero C changes
-#   - The 'name' field maps each entry to its SlaveOffsets field
-#     in the generic C registration engine (Phase 3)
-#
-# Sync manager directions:
-#   output = RxPDO (master writes TO drive)   — SM2
-#   input  = TxPDO (drive writes TO master)   — SM3
-#
-# Bit widths must match the drive's ESI file exactly.
-# Mismatches cause ecrt_domain_reg_pdo_entry_list() to fail.
-# ============================================================
-# ============================================================
-# motion: — Drive-hardware motion parameters
-# See a6minas.yml for field descriptions.
-#
-# Delta ASDA-A2-E:
-#   rpm_const:    The comment in device-configuration.yml noted "10 for delta"
-#   drive_x_ratio: Delta ASDA2E default encoder resolution
-# ============================================================
-motion:
-  rpm_const: 10.0
-  drive_x_ratio: 10000
+    # NOT YET DEFINED for SD700 — not required for jog/position testing:
+    # ecs, hard_reset, finsignal, finsignalend, break_on, break_off,
+    # emergency, resetMultiTurn. Add if/when this axis actually needs them.
 
+# ============================================================
+# PDO mapping — extended to 6 Rx / 7 Tx entries.
+# Empirically confirmed to register successfully on real SD700 hardware
+# (from the Delta-file mixup test): PdoJogReady=true, PdoPosReady=true,
+# cyclic task started. All objects below exist in SD700's own dictionary
+# (unlike 0x4F25, which does not exist and caused the original AL 0x001E).
+# Still RE-VERIFY with `ethercat states -p 0 OP` after applying this file
+# for real, since the mixup test's bus went unstable afterward for reasons
+# not yet isolated (possibly the Delta-specific SDO failures upstream, or
+# dc_assign_activate=0 conflicting with this drive's DC-only requirement).
+# ============================================================
 pdo:
-  # dc_assign_activate: Distributed Clock sync assignment.
-  # Set to 0 to preserve existing behaviour (DC sync not configured).
-  # The Delta ASDA-2E was working without DC sync before this field was
-  # introduced. Only change this if you are seeing timing-related faults
-  # on this drive. For reference: 0x0300 enables SYNC0+SYNC1 (1ms cycle).
-  dc_assign_activate: 0x0000
+  # SD700 manual (section 4.6): "only supports DC synchronous mode."
+  # 0x0300 = SYNC0+SYNC1, matches the ESI's own AssignActivate recommendation.
+  # DO NOT set this to 0x0000 for this drive.
+  dc_assign_activate: 0x0300
   sync_managers:
     - sm: 2
       direction: output
@@ -490,3 +399,39 @@ pdo:
           subindex: 0x00
           bits: 16
           name: error_code
+
+# ============================================================
+# Motion parameters.
+#
+# NOTE ON ENCODER RESOLUTION: earlier in this integration the motor
+# nameplate was reported as a 23-bit encoder. This section now uses
+# 17-bit (131,072 counts/rev) per explicit instruction — RECONFIRM this
+# is correct for the actual motor on this axis (nameplate/manual) before
+# trusting any motion. If it turns out to be 23-bit after all, multiply
+# both values below by 64 (8,388,608 / 131,072) to get back to the
+# 23-bit numbers (drive_x_ratio=2097152, rpm_const=12582912).
+#
+# Derivation (confirmed against drive + Veichi manual formula for 6081h/60FF,
+# "motor speed = raw x (6091h-1/6091h-2) / Encoder_resolution x 60"):
+#   - Read from drive: object 6091h (Gear ratio) = 1:1 — SD700 does NO
+#     internal gearbox compensation itself; the 90:1 external worm gear
+#     must be fully accounted for in software (drive_x_ratio/rpm_const),
+#     same architecture already assumed for the 23-bit case.
+#   - counts/output-rev = 131,072 (17-bit) x 90 (external gearbox) = 11,796,480
+#   - drive_x_ratio (counts/degree) = 11,796,480 / 360 = 32,768
+#   - rpm_const = drive_x_ratio x 6, matching this codebase's own confirmed
+#     relationship (validated against the working A6B config: 20000 x 6 = 120000)
+#     = 196,608
+#   NOTE: rpm_const here does NOT match the old Section-13-era config's
+#   49,152 for a 17-bit/90:1 setup — that's expected, not a red flag; that
+#   config scheme uses different internal conventions (Feed/DriveXRatio
+#   fields defined differently) and the two are not directly comparable.
+#
+# ASSUMES 0x60FF uses the same "command unit/s" convention as 0x6081h per
+# the manual (confirmed: 60FF is documented in identical units). Still
+# UNVERIFIED empirically for this drive — test at lowest possible commanded
+# speed first, hand on e-stop, before trusting any larger commanded motion.
+# ============================================================
+motion:
+  drive_x_ratio: 32768
+  rpm_const: 196608

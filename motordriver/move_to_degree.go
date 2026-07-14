@@ -197,6 +197,19 @@ func moveMotorToDegree(device *MasterDevice, degreeToRotate float64) error {
 	pitchErr := getPitchError(device.Name, destination)
 	moveToWithComp := moveToPos + pitchErr - backlash
 
+	// Fixed absolute goal (in degrees), captured ONCE here — before any retry can
+	// happen. This is the actual bug fix: previously, every retry attempt called
+	// doRotate(device, moveToWithComp) with the SAME relative delta, but doRotate
+	// always computes goal = currentActual + delta using whatever position the
+	// shaft is AT THAT MOMENT. If a failed attempt caused any real partial motion
+	// before failing (exactly what a Phase 2 hiccup looks like), the next retry
+	// would read the new (moved) position and add the same relative delta again —
+	// compounding the error further from the intended destination with every
+	// retry, rather than correcting toward it. This is generic to all drives
+	// (A6B/Delta/Nidec/SD700) since it's a bug in the shared retry bookkeeping,
+	// not in any driver-specific code.
+	absoluteGoalDeg := driverStatus.currentPosition + moveToWithComp
+
 	clearTargetReached(device)
 
 	// ----------------------------------------------------------
@@ -216,6 +229,17 @@ func moveMotorToDegree(device *MasterDevice, degreeToRotate float64) error {
 			// Re-arm the PP set-point handshake so the cyclic task re-sends bit4 HIGH.
 			device.ppSetpointPending.Store(true)
 			time.Sleep(50 * time.Millisecond)
+
+			// Recompute the relative delta needed to reach the SAME fixed absolute
+			// goal (absoluteGoalDeg) from wherever the shaft actually is right now —
+			// NOT a reuse of the original moveToWithComp. This is the fix: without
+			// this recompute, retries compound relative-delta drift if the previous
+			// failed attempt caused any real partial motion (see comment above
+			// absoluteGoalDeg's definition).
+			currentDeg := ReadActualPositionFromDrive(device.Name)
+			moveToWithComp = absoluteGoalDeg - currentDeg
+			logger.Debug("[RETRY] recomputed delta toward fixed goal:", absoluteGoalDeg,
+				"from current:", currentDeg, "-> delta:", moveToWithComp)
 		}
 		rotErr = doRotate(device, moveToWithComp)
 		if rotErr == nil {
@@ -306,6 +330,14 @@ func moveMotorToDegree(device *MasterDevice, degreeToRotate float64) error {
 // ----------------------------------------------------------
 
 func stepMode(masterDevice *MasterDevice, valueInDegreeToAdd float64) error {
+	// FIX: same missing-lock issue as moveToZero — stepMode/freeRotate call
+	// the same shared doRotate/hasTargetReached primitives on the same
+	// device without motionMu, allowing a race against moveMotorToDegree or
+	// moveToZero running concurrently. Likely explains earlier reports of
+	// step mode failing intermittently. Generic — all drives.
+	motionMu.Lock()
+	defer motionMu.Unlock()
+
 	logger.Debug("step mode moving to position:", valueInDegreeToAdd)
 
 	driverStatus := getCurrentDriverStatus(masterDevice.Device.Name)
